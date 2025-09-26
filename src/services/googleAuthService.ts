@@ -13,111 +13,207 @@ declare global {
   }
 }
 
+import { Event } from '@/types';
+
+interface GoogleEvent {
+  id: string;
+  summary: string;
+  description?: string;
+  start: { dateTime: string };
+  end: { dateTime: string };
+}
+
 class GoogleAuthService {
   private tokenClient: any = null;
-  private isInitialized = false;
+  private accessToken: string | null = null;
+  private tokenExpiry: number | null = null;
+  private readonly SCOPES = [
+    'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/calendar.readonly'
+  ];
 
-  init() {
-    if (this.isInitialized) return;
+  async init() {
+    if (this.tokenClient) return;
+
+    // Load the Google Identity Services script
+    await this.loadGoogleIdentityScript();
 
     const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID;
     if (!clientId) {
-      throw new Error('Google client ID not configured. Please set VITE_GOOGLE_CLIENT_ID in .env');
+      throw new Error('Google Calendar API client ID not configured');
     }
 
-    // Wait for the Google Identity Services script to load
-    if (!window.google?.accounts?.oauth2) {
-      console.warn('Google Identity Services not loaded yet. Retrying in 1s...');
-      return new Promise((resolve) => {
-        setTimeout(() => resolve(this.init()), 1000);
-      });
-    }
-
-    this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+    // Initialize token client with development-friendly settings
+    this.tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
       client_id: clientId,
-      scope: 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
+      scope: this.SCOPES.join(' '),
       callback: (response: any) => {
         if (response.error) {
           throw new Error(response.error);
         }
-        // Store the access token securely (you might want to use your own storage method)
-        localStorage.setItem('google_access_token', response.access_token);
-        console.log('Google OAuth successful');
+        this.accessToken = response.access_token;
+        this.tokenExpiry = Date.now() + (response.expires_in * 1000);
       },
+      error_callback: (error: any) => {
+        console.error('Google OAuth error:', error);
+        throw new Error(error.type || 'Failed to authenticate');
+      },
+      prompt: 'consent' // Always show consent screen during development
     });
+  }
 
-    this.isInitialized = true;
+  private async loadGoogleIdentityScript(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if ((window as any).google?.accounts?.oauth2) {
+        resolve();
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
+      document.head.appendChild(script);
+    });
   }
 
   async requestAccess() {
-    if (!this.isInitialized) await this.init();
-    if (!this.tokenClient) throw new Error('Token client not initialized');
-    
-    this.tokenClient.requestAccessToken({ prompt: 'consent' });
-  }
+    if (!this.tokenClient) {
+      await this.init();
+    }
 
-  async getEvents(timeMin?: Date, timeMax?: Date): Promise<any[]> {
-    const accessToken = localStorage.getItem('google_access_token');
-    if (!accessToken) throw new Error('Not authenticated with Google Calendar');
+    return new Promise<void>((resolve, reject) => {
+      try {
+        this.tokenClient.callback = (response: any) => {
+          if (response.error) {
+            reject(new Error(response.error));
+            return;
+          }
+          this.accessToken = response.access_token;
+          this.tokenExpiry = Date.now() + (response.expires_in * 1000);
+          resolve();
+        };
 
-    const params = new URLSearchParams({
-      timeMin: (timeMin || new Date()).toISOString(),
-      timeMax: (timeMax || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)).toISOString(),
-      singleEvents: 'true',
-      orderBy: 'startTime'
+        // Request a new access token
+        this.tokenClient.requestAccessToken({
+          prompt: 'consent' // Always show consent screen during development
+        });
+      } catch (error) {
+        reject(error);
+      }
     });
-
-    const response = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        }
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error('Failed to fetch Google Calendar events');
-    }
-
-    const data = await response.json();
-    return data.items || [];
   }
 
-  async addEvent(event: {
-    summary: string;
-    description?: string;
-    start: { dateTime: string };
-    end: { dateTime: string };
-  }) {
-    const accessToken = localStorage.getItem('google_access_token');
-    if (!accessToken) throw new Error('Not authenticated with Google Calendar');
-
-    const response = await fetch(
-      'https://www.googleapis.com/calendar/v3/calendars/primary/events',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(event)
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error('Failed to add event to Google Calendar');
+  private async refreshTokenIfNeeded(): Promise<void> {
+    if (!this.tokenExpiry || Date.now() >= this.tokenExpiry - 60000) { // Refresh if token expires in less than 1 minute
+      await this.requestAccess();
     }
-
-    return response.json();
   }
 
   isAuthenticated(): boolean {
-    return !!localStorage.getItem('google_access_token');
+    return !!this.accessToken && !!this.tokenExpiry && Date.now() < this.tokenExpiry;
+  }
+
+  async getEvents(): Promise<GoogleEvent[]> {
+    try {
+      await this.refreshTokenIfNeeded();
+
+      if (!this.accessToken) {
+        throw new Error('Not authenticated with Google Calendar');
+      }
+
+      const response = await fetch(
+        'https://www.googleapis.com/calendar/v3/calendars/primary/events?' + new URLSearchParams({
+          timeMin: new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString(),
+          timeMax: new Date(new Date().setMonth(new Date().getMonth() + 2)).toISOString(),
+          singleEvents: 'true',
+          orderBy: 'startTime'
+        }),
+        {
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        if (error.error?.status === 'UNAUTHENTICATED' || error.error?.code === 401) {
+          this.accessToken = null;
+          this.tokenExpiry = null;
+          throw new Error('authentication expired');
+        }
+        throw new Error(error.error?.message || 'Failed to fetch events');
+      }
+
+      const data = await response.json();
+      return data.items || [];
+    } catch (error: any) {
+      console.error('Error fetching Google Calendar events:', error);
+      throw error;
+    }
+  }
+
+  async addEvent(event: Event): Promise<GoogleEvent> {
+    try {
+      await this.refreshTokenIfNeeded();
+
+      if (!this.accessToken) {
+        throw new Error('Not authenticated with Google Calendar');
+      }
+
+      const response = await fetch(
+        'https://www.googleapis.com/calendar/v3/calendars/primary/events',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            summary: event.title,
+            description: event.description,
+            start: {
+              dateTime: `${event.date}T${event.startTime}:00`,
+              timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+            },
+            end: {
+              dateTime: `${event.date}T${event.endTime}:00`,
+              timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+            }
+          })
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        if (error.error?.status === 'UNAUTHENTICATED' || error.error?.code === 401) {
+          this.accessToken = null;
+          this.tokenExpiry = null;
+          throw new Error('authentication expired');
+        }
+        throw new Error(error.error?.message || 'Failed to add event');
+      }
+
+      return await response.json();
+    } catch (error: any) {
+      console.error('Error adding Google Calendar event:', error);
+      throw error;
+    }
   }
 
   logout() {
-    localStorage.removeItem('google_access_token');
+    this.accessToken = null;
+    this.tokenExpiry = null;
+    // Clear any Google sign-in state
+    if ((window as any).google?.accounts?.oauth2?.revoke) {
+      (window as any).google.accounts.oauth2.revoke(this.accessToken, () => {
+        console.log('Google OAuth token revoked');
+      });
+    }
   }
 }
 

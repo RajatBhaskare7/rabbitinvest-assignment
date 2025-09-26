@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Calendar, RefreshCw, Link, Unlink, AlertCircle } from "lucide-react";
+import { Calendar, RefreshCw, Link, Unlink, AlertCircle, Info } from "lucide-react";
 import { Event } from "@/types";
 import { googleAuthService } from "@/services/googleAuthService";
 
@@ -40,16 +40,21 @@ const GoogleCalendarSync = ({ events, onEventsUpdate }: GoogleCalendarSyncProps)
     setIsLoading(true);
     try {
       // Initialize Google OAuth flow
-          // Use Vite env (import.meta.env) in this project
-          const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID;
-          if (!clientId) {
-            throw new Error("Google Calendar API client id not configured. Please set VITE_GOOGLE_CLIENT_ID in your .env file.");
-          }
+      const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID;
+      if (!clientId) {
+        throw new Error("Google Calendar API client id not configured. Please set VITE_GOOGLE_CLIENT_ID in your .env file.");
+      }
 
-          // Attempt to initialize any client-side Google Calendar helpers (simulated helper)
-          const { initializeGoogleCalendar } = await import('@/services/notificationService');
-          const ok = await initializeGoogleCalendar();
-          if (!ok) throw new Error('Failed to initialize Google Calendar client');
+      // Initialize Google Auth Service
+      await googleAuthService.init();
+      
+      // Request access token
+      await googleAuthService.requestAccess();
+      
+      // Check if we got the token
+      if (!googleAuthService.isAuthenticated()) {
+        throw new Error('Failed to authenticate with Google Calendar');
+      }
       
       setIsConnected(true);
       toast({
@@ -59,22 +64,39 @@ const GoogleCalendarSync = ({ events, onEventsUpdate }: GoogleCalendarSyncProps)
       
       // Perform initial sync
       await syncCalendar();
-    } catch (error) {
-          console.error('Google Calendar connect error:', error);
-          toast({
-            title: "Connection Failed",
-            description: error?.message || "Failed to connect to Google Calendar. Please try again.",
-            variant: "destructive",
-          });
+    } catch (error: any) {
+      console.error('Google Calendar connect error:', error);
+      
+      // Handle specific error cases
+      if (error.message === 'access_denied') {
+        toast({
+          title: "Connection Cancelled",
+          description: "You cancelled the Google Calendar connection. You can try again when ready.",
+          variant: "default",
+        });
+      } else if (error.message.includes('popup')) {
+        toast({
+          title: "Connection Failed",
+          description: "Please disable your popup blocker and try again.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Connection Failed",
+          description: error?.message || "Failed to connect to Google Calendar. Please try again.",
+          variant: "destructive",
+        });
+      }
+      setIsConnected(false);
     } finally {
       setIsLoading(false);
     }
   };
 
   const disconnectGoogleCalendar = () => {
+    googleAuthService.logout();
     setIsConnected(false);
     setLastSyncTime(null);
-    localStorage.removeItem("google_calendar_credentials");
     toast({
       title: "Disconnected",
       description: "Google Calendar sync has been disabled.",
@@ -111,11 +133,21 @@ const GoogleCalendarSync = ({ events, onEventsUpdate }: GoogleCalendarSyncProps)
       });
     } catch (error: any) {
       console.error('Sync calendar error:', error);
-      toast({
-        title: "Sync Failed",
-        description: error?.message || "Failed to sync with Google Calendar. Please try again.",
-        variant: "destructive",
-      });
+      
+      if (error.message.includes('authentication expired')) {
+        toast({
+          title: "Authentication Expired",
+          description: "Your Google Calendar connection has expired. Please reconnect.",
+          variant: "destructive",
+        });
+        setIsConnected(false);
+      } else {
+        toast({
+          title: "Sync Failed",
+          description: error?.message || "Failed to sync with Google Calendar. Please try again.",
+          variant: "destructive",
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -148,6 +180,12 @@ const GoogleCalendarSync = ({ events, onEventsUpdate }: GoogleCalendarSyncProps)
               <p className="text-sm text-muted-foreground">
                 Connect your Google Calendar to automatically sync events and access them from any device.
               </p>
+              <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                <Info className="w-4 h-4 text-blue-500 inline-block mr-1" />
+                <span className="text-xs text-blue-600 dark:text-blue-400">
+                  During development, you'll see an "Unverified app" warning. Click "Continue" to proceed safely.
+                </span>
+              </div>
             </div>
             <Button
               onClick={connectGoogleCalendar}
