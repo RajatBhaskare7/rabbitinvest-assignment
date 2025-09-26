@@ -102,27 +102,7 @@ const Login = () => {
           </CardContent>
         </Card>
 
-        {/* Features Preview */}
-        <div className="grid grid-cols-3 gap-4 text-center">
-          <div className="space-y-2">
-            <div className="mx-auto w-10 h-10 bg-primary-light rounded-lg flex items-center justify-center">
-              <Calendar className="w-5 h-5 text-primary" />
-            </div>
-            <p className="text-xs text-muted-foreground">Beautiful Calendar</p>
-          </div>
-          <div className="space-y-2">
-            <div className="mx-auto w-10 h-10 bg-accent-light rounded-lg flex items-center justify-center">
-              <Clock className="w-5 h-5 text-accent" />
-            </div>
-            <p className="text-xs text-muted-foreground">Smart Reminders</p>
-          </div>
-          <div className="space-y-2">
-            <div className="mx-auto w-10 h-10 bg-primary-light rounded-lg flex items-center justify-center">
-              <Users className="w-5 h-5 text-primary" />
-            </div>
-            <p className="text-xs text-muted-foreground">Easy Sharing</p>
-          </div>
-        </div>
+   
       </div>
     </div>
   );
